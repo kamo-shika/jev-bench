@@ -9,6 +9,10 @@ import math
 
 EPS = 1e-12
 
+# 温度の探索範囲。ラベルの logprob が大きく開くモデルでは最適な温度が 10 を超えるので、
+# 上端は広めに取る
+T_LO, T_HI = 0.05, 100.0
+
 
 def argmax(probs):
     """最も確率の高いラベル。同点のときは答えなし（None）。
@@ -106,7 +110,7 @@ def nll(items, t):
     ) / len(items)
 
 
-def fit_temperature(items, lo=0.05, hi=10.0, iters=60):
+def fit_temperature(items, lo=T_LO, hi=T_HI, iters=80):
     """検証用データで NLL が最小になる温度を 1 変数で探す。
 
     ponytail: NLL が温度について単峰であると仮定した三分探索。

@@ -125,7 +125,7 @@ def _flatten(records, order=None, temperature=1.0):
 def _fit(calibrate_records, order, path, label):
     t = metrics.fit_temperature([(p, g) for _, p, g in _flatten(calibrate_records, order=order)])
     print("温度 T = %.3f（%s の「%s」で推定）" % (t, path, label))
-    if t < 0.06 or t > 9.9:
+    if t < metrics.T_LO * 1.2 or t > metrics.T_HI * 0.99:
         print("  注意: 探索範囲の端に張り付いている。収束していない可能性がある")
     return t
 
