@@ -16,7 +16,6 @@ gold は questions と同じ並びの正解ラベル。score は段階の番号�
 """
 
 import argparse
-import itertools
 import json
 import os
 import sys
@@ -194,7 +193,15 @@ def report(args):
         rate = metrics.order_change_rate([a for a, _ in pairs], [b for _, b in pairs])
         print("順序 %d での答えの変化率 %.4f（入れ替えた質問 %d 件）" % (order, rate, len(pairs)))
 
-    latencies = list(itertools.chain.from_iterable(r["latency"] for r in records))
+    # latency と runs は同じ回で追記されるので並びが対応する。
+    # 2 回目以降の繰り返しは同じプロンプトなのでプレフィックスキャッシュに当たって
+    # 桁違いに速い。項目ごとに最初の 1 回（＝その項目で初めて投げるプロンプト）だけを使う
+    latencies = [
+        t
+        for rec in records
+        for t, r in list(zip(rec["latency"], rec["runs"]))[:1]
+        if r["order"] == 0
+    ]
     if latencies:
         p50, p95 = metrics.percentiles(latencies)
         print("応答時間 p50 %.3fs  p95 %.3fs" % (p50, p95))
@@ -215,7 +222,7 @@ def main(argv=None):
         help="順序の入れ替えを何通り試すか（1 は元の順序のみ）。choice だけが対象で、"
         "選択肢が K 個の質問は元の並びを含めて K 通りまで",
     )
-    a.add_argument("--backend", choices=["typesafe", "fake"], default="fake")
+    a.add_argument("--backend", choices=["typesafe", "fake", "llamacpp"], default="fake")
     a.add_argument("--url", default=backends.TYPESAFE_URL)
     a.add_argument("--model", default="jev-latest")
 
@@ -229,6 +236,9 @@ def main(argv=None):
 
     if args.backend == "fake":
         return ask(args, backends.ask_fake)
+    if args.backend == "llamacpp":
+        url = args.url if args.url != backends.TYPESAFE_URL else backends.LLAMACPP_URL
+        return ask(args, lambda s, q: backends.ask_llamacpp(s, q, url=url))
     key = os.environ.get("TYPESAFE_API_KEY")
     if not key:
         sys.exit("TYPESAFE_API_KEY を環境変数に設定してください")

@@ -5,10 +5,20 @@
 """
 
 import json
+import math
 import urllib.request
 import zlib
 
 TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
+LLAMACPP_URL = "http://localhost:8099"
+
+# 選択肢に振る記号。1 記号 = 1 トークンであることが前提（Qwen3 では A〜Z がそれぞれ 1 トークン）
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+# 文面を変えると結果が変わるので、定数は 1 か所だけに置く。
+# 末尾の THINK は Qwen3 の思考を空にして、次の 1 トークンを必ず答えにするためのもの
+PROMPT = "{instructions}\n\n{state}\n\n{options}\n\n記号 1 文字だけで答えてください。"
+THINK = "<think>\n\n</think>\n\n"
 
 
 def to_probs(answer):
@@ -45,6 +55,93 @@ def ask_typesafe(state, questions, *, api_key, url=TYPESAFE_URL, model="jev-late
     )
     with urllib.request.urlopen(req) as res:
         return json.load(res)["answers"]
+
+
+def option_names(question):
+    """選択肢の名前を、記号 A, B, C… を振る並びで返す。
+
+    choice は criteria の並び（run.permute が入れ替えるのはここ）、
+    score は段階の番号、noul は「はい / いいえ」の 2 択として true / false。
+    """
+    if question["type"] == "noul":
+        return ["true", "false"]
+    if question["type"] == "score":
+        return [str(i) for i in range(len(question["criteria"]))]
+    return list(question["criteria"])
+
+
+def option_texts(question):
+    """選択肢の説明を option_names と同じ並びで返す。"""
+    criteria = question["criteria"]
+    if question["type"] == "score":
+        return list(criteria)
+    return [criteria[name] for name in option_names(question)]
+
+
+def probs_from_completion(response, names):
+    """/completion の応答を「選択肢名 → 確率」に直す。純粋関数。
+
+    上位トークンに候補の記号が 1 つでも無ければ KeyError。確率 0 で埋めると
+    「候補が上位 20 に入らないほど自信がない」のか「本当に 0」のか区別できなくなる。
+    """
+    top = response["completion_probabilities"][0]["top_logprobs"]
+    by_token = {t["token"]: t["logprob"] for t in top}
+    logprobs = [by_token[LETTERS[i]] for i in range(len(names))]
+    # 候補の中だけで softmax（候補外のトークンに逃げた分は捨てる）
+    high = max(logprobs)
+    exps = [math.exp(lp - high) for lp in logprobs]
+    total = sum(exps)
+    return {name: e / total for name, e in zip(names, exps)}
+
+
+def to_answer(question, probs):
+    """「選択肢名 → 確率」を本家の答えの形にする。to_probs が読むキーだけ入れる。"""
+    if question["type"] == "noul":
+        return {"type": "noul", "noul": probs["true"]}
+    return {"type": question["type"], "probabilities": probs}
+
+
+def ask_llamacpp(state, questions, *, url=LLAMACPP_URL):
+    """llama-server に 1 質問 = /completion 1 回で投げ、記号の確率を読む。"""
+    answers = {}
+    for question in questions:
+        names = option_names(question)
+        text = PROMPT.format(
+            instructions=question["instructions"],
+            state=state,
+            options="\n".join(
+                "%s. %s" % (LETTERS[i], t) for i, t in enumerate(option_texts(question))
+            ),
+        )
+        prompt = _post(url + "/apply-template", {"messages": [{"role": "user", "content": text}]})
+        prompt = prompt["prompt"] + THINK
+        for n_probs in (20, 100):
+            body = {
+                "prompt": prompt,
+                "n_predict": 1,
+                "n_probs": n_probs,
+                "temperature": 0,
+                "cache_prompt": True,
+            }
+            try:
+                probs = probs_from_completion(_post(url + "/completion", body), names)
+                break
+            except KeyError as e:
+                missing = e
+        else:
+            raise RuntimeError(
+                "上位 %d トークンに候補の記号 %s が無い（質問 %s）" % (n_probs, missing, question["id"])
+            )
+        answers[question["id"]] = to_answer(question, probs)
+    return answers
+
+
+def _post(url, body):
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req) as res:
+        return json.load(res)
 
 
 def ask_fake(state, questions):
