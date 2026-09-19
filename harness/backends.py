@@ -18,6 +18,11 @@ LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 # 文面を変えると結果が変わるので、定数は 1 か所だけに置く。
 # 末尾の THINK は Qwen3 の思考を空にして、次の 1 トークンを必ず答えにするためのもの
 PROMPT = "{instructions}\n\n{state}\n\n{options}\n\n記号 1 文字だけで答えてください。"
+# 例を添えるときだけの並び。例の答えは記号なので、選択肢の一覧より後ろに置く。
+# 答えを当てる本題は最後に置き、例の答えの続きを書かせないようにする
+PROMPT_EXAMPLES = (
+    "{instructions}\n\n{options}\n\n{examples}\n\n{state}\n\n記号 1 文字だけで答えてください。"
+)
 THINK = "<think>\n\n</think>\n\n"
 
 
@@ -94,6 +99,26 @@ def probs_from_completion(response, names):
     return {name: e / total for name, e in zip(names, exps)}
 
 
+def build_prompt(state, question):
+    """モデルに投げる本文を組み立てる。純粋関数。
+
+    question に examples（{"state": ..., "gold": 選択肢名} の列）があれば、
+    その答えの記号は**いまの選択肢の並び**から引く。run.permute が並びを入れ替えても
+    例の記号が選択肢の一覧とずれない。
+    """
+    names = option_names(question)
+    options = "\n".join("%s. %s" % (LETTERS[i], t) for i, t in enumerate(option_texts(question)))
+    examples = question.get("examples")
+    if not examples:
+        return PROMPT.format(instructions=question["instructions"], state=state, options=options)
+    shown = "\n\n".join(
+        "例\n%s\n答え: %s" % (e["state"], LETTERS[names.index(e["gold"])]) for e in examples
+    )
+    return PROMPT_EXAMPLES.format(
+        instructions=question["instructions"], state=state, options=options, examples=shown
+    )
+
+
 def to_answer(question, probs):
     """「選択肢名 → 確率」を本家の答えの形にする。to_probs が読むキーだけ入れる。"""
     if question["type"] == "noul":
@@ -106,13 +131,7 @@ def ask_llamacpp(state, questions, *, url=LLAMACPP_URL):
     answers = {}
     for question in questions:
         names = option_names(question)
-        text = PROMPT.format(
-            instructions=question["instructions"],
-            state=state,
-            options="\n".join(
-                "%s. %s" % (LETTERS[i], t) for i, t in enumerate(option_texts(question))
-            ),
-        )
+        text = build_prompt(state, question)
         prompt = _post(url + "/apply-template", {"messages": [{"role": "user", "content": text}]})
         prompt = prompt["prompt"] + THINK
         for n_probs in (20, 100):
