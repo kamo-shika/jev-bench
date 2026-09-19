@@ -95,24 +95,44 @@ def test_偽バックエンドは決定的で確率の和が1():
     assert set(backends.to_probs(first["q2"])) == {"0", "1", "2"}
 
 
-def test_score_の逆順は元の段階の番号に戻る():
+def test_score_を戻すと元の段階のラベルに対応する():
     q = {"id": "s", "type": "score", "instructions": "", "criteria": ["低", "中", "高"]}
-    assert run.permute(q, "x", 0)["criteria"] == ["低", "中", "高"]
-    assert run.permute(q, "x", 1)["criteria"] == ["高", "中", "低"]
-    assert run.permute(q, "x", 2)["criteria"] == ["低", "中", "高"]  # 偶数は反転しない
-    # 逆順で聞いたときの「0 番目＝高」は、元の並びでは 2 番目
-    assert run.unpermute_score({"0": 0.7, "1": 0.2, "2": 0.1}, 3) == {
-        "2": 0.7,
-        "1": 0.2,
-        "0": 0.1,
-    }
+    assert run.permute(q, 0)["criteria"] == ["低", "中", "高"]
+    probs = {"0": 0.7, "1": 0.2, "2": 0.1}
+    # 3 通り以上の順序で、戻したあとの確率が元のラベルの番号に付く
+    for order in range(1, 5):
+        moved = run.permute(q, order)
+        assert list(moved["criteria"]) != q["criteria"]  # 元の並びのままにはならない
+        assert sorted(moved["criteria"]) == sorted(q["criteria"])
+        back = run.unpermute_score(probs, 3, run.shift_for(q, order))
+        for j, level in enumerate(moved["criteria"]):
+            assert back[str(q["criteria"].index(level))] == probs[str(j)]
 
 
-def test_choice_の入れ替えは同じ選択肢集合を保つ():
+def test_choice_の入れ替えは並びを変えて選択肢集合を保つ():
     q = {"id": "c", "type": "choice", "instructions": "", "criteria": {"a": "1", "b": "2", "c": "3"}}
-    moved = run.permute(q, "x", 1)
-    assert moved["criteria"] == {"a": "1", "b": "2", "c": "3"}  # 中身は同じ
-    assert run.permute(q, "x", 0) is q
+    for order in range(1, 5):
+        moved = run.permute(q, order)
+        assert list(moved["criteria"]) != list(q["criteria"])  # 必ず並びが変わる
+        assert moved["criteria"] == q["criteria"]  # 中身は同じ（dict の比較は並びを見ない）
+    assert run.permute(q, 0) is q
+
+
+def test_flatten_は各順序の1回目だけを使う():
+    record = {
+        "id": "x",
+        "gold": ["a"],
+        "runs": [
+            {"order": 0, "probs": [{"a": 0.8, "b": 0.2}]},
+            {"order": 0, "probs": [{"a": 0.0, "b": 1.0}]},  # 繰り返しのぶれは混ぜない
+            {"order": 1, "probs": [{"a": 0.4, "b": 0.6}]},
+            {"order": 1, "probs": [{"a": 0.0, "b": 1.0}]},
+        ],
+    }
+    (なし, _), = run._flatten([record], order=0)
+    assert abs(なし["a"] - 0.8) < 1e-12
+    (あり, _), = run._flatten([record], order=None)
+    assert abs(あり["a"] - 0.6) < 1e-12  # 各順序の 1 回目 0.8 と 0.4 の平均
 
 
 if __name__ == "__main__":

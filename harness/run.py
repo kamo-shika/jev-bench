@@ -19,7 +19,6 @@ import argparse
 import itertools
 import json
 import os
-import random
 import sys
 import time
 
@@ -31,27 +30,41 @@ def load_jsonl(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
-def permute(question, item_id, order):
+def shift_for(question, order):
+    """order 番目の順序での巡回シフト量。0 は元の並び。
+
+    選択肢が K 個なら、元の並びを除いて K-1 通り。random.shuffle と違い
+    order が 0 でない限り必ず並びが変わるので、順序変化率が低めに出ない。
+    noul は criteria の並びから答えが決まらないので入れ替えない。
+    """
+    if order == 0 or question["type"] == "noul":
+        return 0
+    k = len(question["criteria"])
+    return 0 if k < 2 else (order - 1) % (k - 1) + 1
+
+
+def permute(question, order):
     """選択肢の順序を入れ替えた質問を作る。criteria の並び順だけを変える。
 
-    order が 0 のときは元のまま。score は段階の順序に意味があるので、
-    逆順だけを入れ替えとして扱う（order が奇数のときだけ反転し、
-    ラベルは unpermute_score で元の番号に戻す）。noul に順序はない。
+    score は段階の番号が並びと一緒に動くので、答えの確率は
+    unpermute_score で元の番号に戻す。
     """
-    if order == 0:
+    shift = shift_for(question, order)
+    if shift == 0:
         return question
-    if question["type"] == "choice":
-        keys = list(question["criteria"])
-        random.Random("%s/%d" % (item_id, order)).shuffle(keys)
-        return {**question, "criteria": {k: question["criteria"][k] for k in keys}}
-    if question["type"] == "score" and order % 2 == 1:
-        return {**question, "criteria": list(reversed(question["criteria"]))}
-    return question
+    keys = list(question["criteria"])
+    keys = keys[shift:] + keys[:shift]
+    if question["type"] == "score":
+        return {**question, "criteria": keys}
+    return {**question, "criteria": {k: question["criteria"][k] for k in keys}}
 
 
-def unpermute_score(probs, n_levels):
-    """逆順で聞いた score の確率を、元の段階の番号に戻す。"""
-    return {str(n_levels - 1 - int(k)): v for k, v in probs.items()}
+def unpermute_score(probs, n_levels, shift):
+    """入れ替えて聞いた score の確率を、元の段階の番号に戻す。
+
+    入れ替えたあとの j 番目は、元の並びでは (j + shift) 番目。
+    """
+    return {str((int(k) + shift) % n_levels): v for k, v in probs.items()}
 
 
 def ask(args, backend):
@@ -59,7 +72,7 @@ def ask(args, backend):
     for item in load_jsonl(args.input):
         record = {"id": item["id"], "gold": item["gold"], "runs": [], "latency": []}
         for order in range(args.orders):
-            questions = [permute(q, item["id"], order) for q in item["questions"]]
+            questions = [permute(q, order) for q in item["questions"]]
             for _ in range(args.repeats):
                 started = time.monotonic()
                 answers = backend(item["state"], questions)
@@ -67,8 +80,8 @@ def ask(args, backend):
                 probs = []
                 for q in item["questions"]:
                     p = backends.to_probs(answers[q["id"]])
-                    if q["type"] == "score" and order % 2 == 1:
-                        p = unpermute_score(p, len(q["criteria"]))
+                    if q["type"] == "score":
+                        p = unpermute_score(p, len(q["criteria"]), shift_for(q, order))
                     probs.append(p)
                 record["runs"].append({"order": order, "probs": probs})
         out.append(record)
@@ -81,22 +94,22 @@ def ask(args, backend):
 
 
 def _flatten(records, order=None, temperature=1.0):
-    """(確率, 正解) の列にならす。order を指定するとその順序の 1 回目だけを使う。
+    """(確率, 正解) の列にならす。使うのはどの順序でも 1 回目の実行だけ。
 
-    order=None は全実行の平均。順序の入れ替えだけでなく繰り返しのぶれも一緒に
-    ならされるので、「順序入れ替えの平均」の欄はその両方が効いた値になる。
+    order を指定するとその順序の 1 回目、order=None は各順序の 1 回目の平均。
+    繰り返しのぶれをここに混ぜないので、「順序入れ替えの平均」の欄には
+    順序の効果だけが出る。ぶれは元の順序の N 回から別に出す。
     """
     items = []
     for record in records:
-        runs = [r for r in record["runs"] if order is None or r["order"] == order]
+        firsts = {}
+        for r in record["runs"]:
+            firsts.setdefault(r["order"], r)
+        runs = list(firsts.values()) if order is None else [firsts[o] for o in firsts if o == order]
         if not runs:
             continue
         for i, gold in enumerate(record["gold"]):
-            probs = (
-                runs[0]["probs"][i]
-                if order is not None
-                else metrics.average_probs([r["probs"][i] for r in runs])
-            )
+            probs = metrics.average_probs([r["probs"][i] for r in runs])
             items.append((metrics.apply_temperature(probs, temperature), gold))
     return items
 
@@ -110,7 +123,7 @@ def report(args):
         if temperature < 0.06 or temperature > 9.9:
             print("  注意: 探索範囲の端に張り付いている。収束していない可能性がある")
 
-    for label, order in (("順序そのまま", 0), ("順序入れ替えの平均", None)):
+    for label, order in (("順序入れ替えの平均なし", 0), ("順序入れ替えの平均あり", None)):
         for t_label, t in (("温度 1.0", 1.0), ("温度 %.3f" % temperature, temperature)):
             if t == 1.0 and t_label != "温度 1.0":
                 continue
