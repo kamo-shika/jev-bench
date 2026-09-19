@@ -123,22 +123,22 @@ def test_choice_の入れ替えは並びを変えて選択肢集合を保つ():
     assert run.shift_for(q, 4) == 0
 
 
-def test_flatten_は各順序の1回目だけを使う():
+def test_flatten_は順序ごとに繰り返しを平均してから順序を平均する():
     record = {
         "id": "x",
         "qids": ["q1"],
         "gold": ["a"],
         "runs": [
             {"order": 0, "probs": {"q1": {"a": 0.8, "b": 0.2}}},
-            {"order": 0, "probs": {"q1": {"a": 0.0, "b": 1.0}}},  # 繰り返しのぶれは混ぜない
+            {"order": 0, "probs": {"q1": {"a": 0.0, "b": 1.0}}},
             {"order": 1, "probs": {"q1": {"a": 0.4, "b": 0.6}}},
             {"order": 1, "probs": {"q1": {"a": 0.0, "b": 1.0}}},
         ],
     }
     (_, なし, _), = run._flatten([record], order=0)
-    assert abs(なし["a"] - 0.8) < 1e-12
+    assert abs(なし["a"] - 0.4) < 1e-12  # order 0 の 0.8 と 0.0 の平均
     (_, あり, _), = run._flatten([record], order=None)
-    assert abs(あり["a"] - 0.6) < 1e-12  # 各順序の 1 回目 0.8 と 0.4 の平均
+    assert abs(あり["a"] - 0.3) < 1e-12  # 順序ごとの平均 0.4 と 0.2 の平均
 
 
 def _write_raw(path, records):
@@ -245,6 +245,79 @@ def test_順序変化率の分母は入れ替えた質問だけ():
     行, = [line for line in _report_lines(records) if line.startswith("順序 1")]
     assert "変化率 1.0000" in 行  # 入れ替えた 1 件が変わったので 1/1
     assert "入れ替えた質問 1 件" in 行
+
+
+def test_順序変化率に繰り返しのぶれが混ざらない():
+    # どちらの順序も 3 回の平均は a 0.5 / b 0.5。真の順序効果は 0 なので変化率も 0。
+    record = {
+        "id": "x",
+        "qids": ["q1"],
+        "gold": ["a"],
+        "runs": [
+            {"order": 0, "probs": {"q1": {"a": p, "b": 1 - p}}} for p in (0.55, 0.45, 0.50)
+        ] + [
+            {"order": 1, "probs": {"q1": {"a": p, "b": 1 - p}}} for p in (0.45, 0.55, 0.50)
+        ],
+        "latency": [0.1],
+    }
+    for order in (0, 1):
+        (_, 平均, _), = run._flatten([record], order=order)
+        assert metrics.argmax(平均) is None  # 同点なので両順序とも答えなし
+
+    行, = [line for line in _report_lines([record]) if line.startswith("順序 1")]
+    assert "変化率 0.0000" in 行
+
+
+def test_同点は不正解として数える():
+    # gold は名前順で先の a。同点を a と読めば正解になってしまうが、答えなしなので不正解
+    records = [{
+        "id": "x",
+        "qids": ["q1"],
+        "gold": ["a"],
+        "runs": [{"order": 0, "probs": {"q1": {"a": 0.5, "b": 0.5}}}],
+        "latency": [0.1],
+    }]
+    行 = [line for line in _report_lines(records) if line.startswith("正解率")]
+    assert 行 and all("正解率 0.0000" in line for line in 行)
+
+
+def test_calibrate_と測定用で順序の集合が違うと止まる():
+    測定 = _two_order_records()  # 順序 0 と 1
+    検証 = [{**r, "runs": [r["runs"][0]]} for r in _two_order_records()]  # 順序 0 だけ
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            _report_lines(測定, calibrate=検証)
+    except SystemExit as e:
+        assert "順序の集合" in str(e)
+        assert "[0]" in str(e) and "[0, 1]" in str(e)  # 両方の順序を出す
+    else:
+        raise AssertionError("順序の集合が違っても止まらなかった")
+
+
+def _ask_item(item):
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "入力.jsonl")
+        with open(src, "w", encoding="utf-8") as f:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        args = argparse.Namespace(input=src, output=os.path.join(d, "生.jsonl"), orders=1, repeats=1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            run.ask(args, backends.ask_fake)
+
+
+def test_ask_は壊れた入力で止まる():
+    q = {"id": "q1", "type": "choice", "instructions": "", "criteria": {"a": "", "b": ""}}
+    _ask_item({"id": "ok", "state": "本文", "questions": [q], "gold": ["a"]})  # これは通る
+
+    for 壊れた in (
+        {"id": "gold不足", "state": "本文", "questions": [q, {**q, "id": "q2"}], "gold": ["a"]},
+        {"id": "ID重複", "state": "本文", "questions": [q, q], "gold": ["a", "a"]},
+    ):
+        try:
+            _ask_item(壊れた)
+        except AssertionError as e:
+            assert 壊れた["id"] in str(e)
+        else:
+            raise AssertionError("%s で止まらなかった" % 壊れた["id"])
 
 
 def test_calibrate_に測定用と同じパスを渡すと止まる():

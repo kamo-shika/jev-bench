@@ -53,12 +53,22 @@ def permute(question, order):
     return {**question, "criteria": {k: question["criteria"][k] for k in keys}}
 
 
+def _orders_of(records):
+    return sorted({r["order"] for rec in records for r in rec["runs"]})
+
+
 def ask(args, backend):
     out = []
     for item in load_jsonl(args.input):
+        qids = [q["id"] for q in item["questions"]]
+        assert len(item["gold"]) == len(qids), (
+            "%s: gold %d 件に対して questions %d 件。並びが一致していない"
+            % (item["id"], len(item["gold"]), len(qids))
+        )
+        assert len(set(qids)) == len(qids), "%s: 質問 ID が重複している %r" % (item["id"], qids)
         record = {
             "id": item["id"],
-            "qids": [q["id"] for q in item["questions"]],
+            "qids": qids,
             "gold": item["gold"],
             "runs": [],
             "latency": [],
@@ -86,25 +96,29 @@ def ask(args, backend):
 
 
 def _flatten(records, order=None, temperature=1.0):
-    """((項目 ID, 質問 ID), 確率, 正解) の列にならす。使うのはどの順序でも 1 回目の実行だけ。
+    """((項目 ID, 質問 ID), 確率, 正解) の列にならす。
 
-    order を指定するとその順序の 1 回目、order=None は各順序の 1 回目の平均。
+    まず順序ごとに繰り返し分の確率を平均し、そのうえで order=None なら順序どうしを平均する
+    （順序ごとに繰り返し回数が違っても、順序の重みは等しくなる）。
+    1 回目だけを使うと繰り返しのぶれが順序の効果に見えてしまうので、先に平均する。
     その質問で実際に投げていない順序（score・noul・選択肢が足りない場合）は
     平均に入れないので、同じ並びを二重に数えることはない。
-    繰り返しのぶれをここに混ぜないので、「順序入れ替えの平均」の欄には
-    順序の効果だけが出る。ぶれは元の順序の N 回から別に出す。
     """
     items = []
     for record in records:
-        firsts = {}
+        groups = {}
         for r in record["runs"]:
-            firsts.setdefault(r["order"], r)
-        runs = list(firsts.values()) if order is None else [r for o, r in firsts.items() if o == order]
+            if order is None or r["order"] == order:
+                groups.setdefault(r["order"], []).append(r)
         for qid, gold in zip(record["qids"], record["gold"]):
-            probs = [r["probs"][qid] for r in runs if qid in r["probs"]]
-            if not probs:
+            per_order = [
+                metrics.average_probs([r["probs"][qid] for r in runs if qid in r["probs"]])
+                for runs in groups.values()
+                if any(qid in r["probs"] for r in runs)
+            ]
+            if not per_order:
                 continue
-            avg = metrics.average_probs(probs)
+            avg = metrics.average_probs(per_order)
             items.append(((record["id"], qid), metrics.apply_temperature(avg, temperature), gold))
     return items
 
@@ -123,6 +137,14 @@ def report(args):
 
     records = load_jsonl(args.input)
     calibrate_records = load_jsonl(args.calibrate) if args.calibrate else []
+
+    # 順序の集合がずれていると、「平均あり」の T が黙って平均なしの値になる
+    if args.calibrate and _orders_of(calibrate_records) != _orders_of(records):
+        sys.exit(
+            "--calibrate と測定用で順序の集合が違います（検証用 %r / 測定用 %r）。"
+            "同じ --orders で作り直してください"
+            % (_orders_of(calibrate_records), _orders_of(records))
+        )
 
     for label, order in (("順序入れ替えの平均なし", 0), ("順序入れ替えの平均あり", None)):
         # 温度はその行の確率で当てる。平均なしで当てた T を平均ありの行に使い回さない
@@ -159,7 +181,7 @@ def report(args):
         )
 
     # 分母は実際に入れ替えた質問だけ。(項目 ID, 質問 ID) で引き当て、片方に無い組は数えない
-    orders = sorted({r["order"] for rec in records for r in rec["runs"]})
+    orders = _orders_of(records)
     base = {key: metrics.argmax(p) for key, p, _ in _flatten(records, order=0)}
     for order in orders[1:]:
         pairs = [

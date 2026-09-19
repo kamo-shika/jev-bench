@@ -11,8 +11,17 @@ EPS = 1e-12
 
 
 def argmax(probs):
-    """最も確率の高いラベル。同点のときはラベル名の順で先のものを返す（再現性のため）。"""
-    return max(sorted(probs), key=lambda k: probs[k])
+    """最も確率の高いラベル。同点のときは答えなし（None）。
+
+    名前順で先のラベルを選ぶと、確率が割れているだけの質問が
+    ラベルの付け方次第で当たったり外れたりする。正解率では None を不正解として数え、
+    順序変化率では None 同士を「変化なし」として数える。
+    """
+    if not probs:
+        return None
+    top = max(probs.values())
+    best = [k for k, v in probs.items() if v == top]
+    return best[0] if len(best) == 1 else None
 
 
 def accuracy(preds, golds):
