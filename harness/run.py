@@ -122,6 +122,78 @@ def _flatten(records, order=None, temperature=1.0):
     return items
 
 
+def _is_choice(probs):
+    """raw には質問の型が入っていないので、ラベルの形から choice かどうかを見る。
+
+    ponytail: score は段階の番号、noul は true/false と決まっているので、それ以外を choice
+    とみなす。型が要る指標が増えたら ask の出力に type を書くようにしてこの推定を消す。
+    """
+    labels = set(probs)
+    return labels != {"true", "false"} and not all(k.isdigit() for k in labels)
+
+
+def _choice_counts(records):
+    """choice の質問だけを数える。戻り値は (順序 → 混同行列, ラベル → 位置ごとの回数)。
+
+    混同行列は 正解 → (答え → 件数)。答えなし（同点）は None のまま数える。
+    位置は記号 A, B, C… の何番目にその選択肢が置かれていたか。
+    同じ (項目, 質問, 順序) は繰り返しの 1 回目だけを数え、分母を質問数にそろえる。
+    """
+    gold_of = {
+        (rec["id"], qid): g for rec in records for qid, g in zip(rec["qids"], rec["gold"])
+    }
+    confusion, positions, seen = {}, {}, set()
+    for rec in records:
+        for r in rec["runs"]:
+            for qid, probs in r["probs"].items():
+                key = (rec["id"], qid, r["order"])
+                if key in seen or not _is_choice(probs):
+                    continue
+                seen.add(key)
+                pred = metrics.argmax(probs)
+                rows = confusion.setdefault(r["order"], {}).setdefault(gold_of[key[:2]], {})
+                rows[pred] = rows.get(pred, 0) + 1
+                if pred is not None:
+                    at = positions.setdefault(pred, {})
+                    at[list(probs).index(pred)] = at.get(list(probs).index(pred), 0) + 1
+    return confusion, positions
+
+
+def _print_choice_counts(records):
+    confusion, positions = _choice_counts(records)
+    if not confusion:
+        return
+    labels = sorted({g for rows in confusion.values() for g in rows})
+    preds = sorted(
+        {p for rows in confusion.values() for row in rows.values() for p in row},
+        key=lambda p: (p is None, p),
+    )
+    width = max(len(s) for s in labels + [p or "答えなし" for p in preds])
+    for order in sorted(confusion):
+        print("\n混同行列（順序 %d、choice のみ）  正解 \\ 答え" % order)
+        print("  %-*s %s" % (width, "", " ".join("%*s" % (width, p or "答えなし") for p in preds)))
+        for gold in labels:
+            row = confusion[order].get(gold, {})
+            print(
+                "  %-*s %s  (正解 %d 件)"
+                % (
+                    width,
+                    gold,
+                    " ".join("%*d" % (width, row.get(p, 0)) for p in preds),
+                    sum(row.values()),
+                )
+            )
+
+    slots = sorted({i for at in positions.values() for i in at})
+    print("\n選択肢 × 記号の位置ごとに選ばれた回数（全順序、choice のみ）")
+    print("  %-*s %s" % (width, "", " ".join("%*s" % (width, backends.LETTERS[i]) for i in slots)))
+    for label in sorted(positions):
+        print(
+            "  %-*s %s"
+            % (width, label, " ".join("%*d" % (width, positions[label].get(i, 0)) for i in slots))
+        )
+
+
 def _fit(calibrate_records, order, path, label):
     t = metrics.fit_temperature([(p, g) for _, p, g in _flatten(calibrate_records, order=order)])
     print("温度 T = %.3f（%s の「%s」で推定）" % (t, path, label))
@@ -155,13 +227,23 @@ def report(args):
             items = _flatten(records, order=order, temperature=t)
             preds = [metrics.argmax(p) for _, p, _ in items]
             golds = [g for _, _, g in items]
-            value, table = metrics.ece(
-                [(max(p.values()), metrics.argmax(p) == g) for _, p, g in items]
-            )
+            scored = [(max(p.values()), metrics.argmax(p) == g) for _, p, g in items]
+            value, table = metrics.ece(scored)
             print("\n== %s / %s ==" % (label, t_label))
             print("正解率 %.4f  ECE %.4f  件数 %d" % (metrics.accuracy(preds, golds), value, len(items)))
+            # ECE は「信頼度の値が当たっているか」しか見ない。信頼度の高い答えほど
+            # 当たっているか（識別力）は AUROC と上位 / 下位の差で見る
+            area = metrics.auroc(scored)
+            k, low, high, diff = metrics.confidence_extremes(scored)
+            print(
+                "  AUROC %s  下位 20%% 正解率 %.3f  上位 20%% 正解率 %.3f  差 %+.3f（各 %d 件）"
+                % ("なし（正解か不正解しかない）" if area is None else "%.3f" % area, low, high, diff, k)
+            )
             for lo, hi, n, conf, acc in table:
                 print("  [%.1f, %.1f) n=%-4d 平均信頼度 %.3f 正解率 %.3f" % (lo, hi, n, conf, acc))
+
+    # 温度は答えを変えないので、混同行列と位置の表は 4 通りで同じ。順序ごとに 1 度だけ出す
+    _print_choice_counts(records)
 
     # ぶれと順序による答えの変化、応答時間
     spreads = []

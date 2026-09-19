@@ -37,6 +37,28 @@ def test_ece_信頼度1は最後のビン():
     assert table == [(0.9, 1.0, 1, 1.0, 1.0)]
 
 
+def test_auroc_手計算():
+    # 正解のほうが信頼度が高く完全に分かれる → 1.0、逆 → 0.0
+    assert metrics.auroc([(0.9, True), (0.8, True), (0.4, False), (0.3, False)]) == 1.0
+    assert metrics.auroc([(0.9, False), (0.8, False), (0.4, True), (0.3, True)]) == 0.0
+    # 全部同じ信頼度なら見分けられない（同点はすべて 0.5 として数える）
+    assert metrics.auroc([(0.7, True), (0.7, True), (0.7, False), (0.7, False)]) == 0.5
+    # 混ざった例: 正解 0.9, 0.5 / 不正解 0.7, 0.5。組は (0.9,0.7)=1 (0.9,0.5)=1
+    # (0.5,0.7)=0 (0.5,0.5)=0.5 → 2.5 / 4 = 0.625
+    assert abs(metrics.auroc([(0.9, True), (0.5, True), (0.7, False), (0.5, False)]) - 0.625) < 1e-12
+    # 片方しか無ければ定義できない
+    assert metrics.auroc([(0.9, True), (0.5, True)]) is None
+
+
+def test_confidence_extremes_手計算():
+    # 10 件を信頼度の順に並べ、下位 2 件（0.1, 0.2）と上位 2 件（0.9, 1.0）を見る
+    items = [(0.1, True), (0.2, False), (0.3, True), (0.4, True), (0.5, False),
+             (0.6, True), (0.7, True), (0.8, True), (0.9, False), (1.0, False)]
+    k, low, high, diff = metrics.confidence_extremes(items)
+    assert k == 2
+    assert low == 0.5 and high == 0.0 and diff == -0.5
+
+
 def test_percentiles_最近接順位():
     # 4 件なので p50 は 2 番目、p95 は 4 番目
     assert metrics.percentiles([0.4, 0.1, 0.3, 0.2]) == (0.2, 0.4)
@@ -139,6 +161,32 @@ def test_flatten_は順序ごとに繰り返しを平均してから順序を平
     assert abs(なし["a"] - 0.4) < 1e-12  # order 0 の 0.8 と 0.0 の平均
     (_, あり, _), = run._flatten([record], order=None)
     assert abs(あり["a"] - 0.3) < 1e-12  # 順序ごとの平均 0.4 と 0.2 の平均
+
+
+def test_choice_counts_は繰り返しを二重に数えず_choice以外を除く():
+    records = [
+        {
+            "id": "x",
+            "qids": ["q1"],
+            "gold": ["a"],
+            "runs": [
+                {"order": 0, "probs": {"q1": {"a": 0.9, "b": 0.1}}},
+                {"order": 0, "probs": {"q1": {"a": 0.9, "b": 0.1}}},  # 同じ順序の 2 回目
+                {"order": 1, "probs": {"q1": {"b": 0.8, "a": 0.2}}},  # 入れ替えで b が A の位置
+            ],
+            "latency": [0.1],
+        },
+        {  # score は段階の番号なので数えない
+            "id": "y",
+            "qids": ["s1"],
+            "gold": ["0"],
+            "runs": [{"order": 0, "probs": {"s1": {"0": 0.8, "1": 0.2}}}],
+            "latency": [0.1],
+        },
+    ]
+    confusion, positions = run._choice_counts(records)
+    assert confusion == {0: {"a": {"a": 1}}, 1: {"a": {"b": 1}}}
+    assert positions == {"a": {0: 1}, "b": {0: 1}}  # どちらも記号 A の位置で選ばれた
 
 
 def _write_raw(path, records):

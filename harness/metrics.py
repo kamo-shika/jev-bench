@@ -7,7 +7,9 @@
 
 import math
 
-EPS = 1e-12
+# 対数を取る前の下限。8B の raw の最小確率が 1.82e-12 で 1e-12 では余裕が無いので、
+# 実際の確率より 3 桁下に置く
+EPS = 1e-15
 
 # 温度の探索範囲。ラベルの logprob が大きく開くモデルでは最適な温度が 10 を超えるので、
 # 上端は広めに取る
@@ -55,6 +57,45 @@ def ece(items, bins=10):
         value += len(bucket) / total * abs(acc - avg_conf)
         table.append((i / bins, (i + 1) / bins, len(bucket), avg_conf, acc))
     return value, table
+
+
+def auroc(items):
+    """信頼度で正解と不正解をどれだけ見分けられるか。items は ece と同じ列。
+
+    順位和（Mann-Whitney U）で出す。同点は平均順位になるので、同点の組は 0.5 と
+    数えたのと同じ値になる。正解だけ・不正解だけの列では定義できないので None。
+    較正後の ECE が低くても、この値が 0.5 に近ければ信頼度の高低に意味は無い。
+    """
+    correct = [c for c, ok in items if ok]
+    wrong = [c for c, ok in items if not ok]
+    if not correct or not wrong:
+        return None
+
+    ordered = sorted(items, key=lambda x: x[0])
+    ranks = {}  # 信頼度 → 平均順位（1 始まり）
+    i = 0
+    while i < len(ordered):
+        j = i
+        while j < len(ordered) and ordered[j][0] == ordered[i][0]:
+            j += 1
+        ranks[ordered[i][0]] = (i + 1 + j) / 2
+        i = j
+
+    rank_sum = sum(ranks[c] for c in correct)
+    n = len(correct)
+    return (rank_sum - n * (n + 1) / 2) / (n * len(wrong))
+
+
+def confidence_extremes(items, frac=0.2):
+    """信頼度の下位 frac と上位 frac の正解率と、その差。items は ece と同じ列。
+
+    戻り値は (件数, 下位の正解率, 上位の正解率, 差)。
+    """
+    ordered = sorted(items, key=lambda x: x[0])
+    k = max(1, int(len(ordered) * frac))
+    low = sum(ok for _, ok in ordered[:k]) / k
+    high = sum(ok for _, ok in ordered[-k:]) / k
+    return k, low, high, high - low
 
 
 def percentiles(values, ps=(50, 95)):
