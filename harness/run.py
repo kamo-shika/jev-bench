@@ -31,17 +31,22 @@ def load_jsonl(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
-def permute(question, seed):
-    """選択肢の順序を入れ替えた質問を作る。criteria の並び順だけを変える。"""
+def permute(question, item_id, order):
+    """選択肢の順序を入れ替えた質問を作る。criteria の並び順だけを変える。
+
+    order が 0 のときは元のまま。score は段階の順序に意味があるので、
+    逆順だけを入れ替えとして扱う（order が奇数のときだけ反転し、
+    ラベルは unpermute_score で元の番号に戻す）。noul に順序はない。
+    """
+    if order == 0:
+        return question
     if question["type"] == "choice":
         keys = list(question["criteria"])
-        random.Random(seed).shuffle(keys)
+        random.Random("%s/%d" % (item_id, order)).shuffle(keys)
         return {**question, "criteria": {k: question["criteria"][k] for k in keys}}
-    if question["type"] == "score":
-        # 段階は順序に意味があるので、逆順だけを入れ替えとして扱う。
-        # ラベル（段階の番号）は元の並びのものに戻して比較する
+    if question["type"] == "score" and order % 2 == 1:
         return {**question, "criteria": list(reversed(question["criteria"]))}
-    return question  # noul に順序はない
+    return question
 
 
 def unpermute_score(probs, n_levels):
@@ -54,11 +59,7 @@ def ask(args, backend):
     for item in load_jsonl(args.input):
         record = {"id": item["id"], "gold": item["gold"], "runs": [], "latency": []}
         for order in range(args.orders):
-            questions = (
-                item["questions"]
-                if order == 0
-                else [permute(q, "%s/%d" % (item["id"], order)) for q in item["questions"]]
-            )
+            questions = [permute(q, item["id"], order) for q in item["questions"]]
             for _ in range(args.repeats):
                 started = time.monotonic()
                 answers = backend(item["state"], questions)
@@ -80,7 +81,11 @@ def ask(args, backend):
 
 
 def _flatten(records, order=None, temperature=1.0):
-    """(確率, 正解) の列にならす。order を指定するとその順序の 1 回目だけを使う。"""
+    """(確率, 正解) の列にならす。order を指定するとその順序の 1 回目だけを使う。
+
+    order=None は全実行の平均。順序の入れ替えだけでなく繰り返しのぶれも一緒に
+    ならされるので、「順序入れ替えの平均」の欄はその両方が効いた値になる。
+    """
     items = []
     for record in records:
         runs = [r for r in record["runs"] if order is None or r["order"] == order]
@@ -102,6 +107,8 @@ def report(args):
     if args.calibrate:
         temperature = metrics.fit_temperature(_flatten(load_jsonl(args.calibrate), order=0))
         print("温度 T = %.3f（%s で推定）" % (temperature, args.calibrate))
+        if temperature < 0.06 or temperature > 9.9:
+            print("  注意: 探索範囲の端に張り付いている。収束していない可能性がある")
 
     for label, order in (("順序そのまま", 0), ("順序入れ替えの平均", None)):
         for t_label, t in (("温度 1.0", 1.0), ("温度 %.3f" % temperature, temperature)):

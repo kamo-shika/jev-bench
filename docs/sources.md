@@ -30,12 +30,19 @@ livedoor の表記は「各記事ファイルにはクリエイティブ・コ�
 | Qwen3-4B（4B 級） | https://huggingface.co/Qwen/Qwen3-4B-GGUF | Apache-2.0 | 可 | Q4_K_M 2.5 GB / Q8_0 4.28 GB。未検証: 正確なファイル名 | 2026-09-19 |
 | Gemma 3 4B it（QAT, 4B 級） | https://huggingface.co/google/gemma-3-4b-it-qat-q4_0-gguf | Gemma Terms of Use（https://ai.google.dev/gemma/terms） | **条件付き**。商用は可だが、禁止用途ポリシーの順守義務が下流にも及ぶ。ダウンロードに連絡先の提供への同意が要る | Q4_0 の GGUF 1 本、3.16 GB。未検証: 正確なファイル名 | 2026-09-19 |
 | Qwen3-8B（8B 級） | https://huggingface.co/Qwen/Qwen3-8B-GGUF | Apache-2.0 | 可 | Q4_K_M 5.03 GB / Q8_0 8.71 GB。未検証: 正確なファイル名 | 2026-09-19 |
-| Llama-3-ELYZA-JP-8B（8B 級・日本語強化） | https://huggingface.co/elyza/Llama-3-ELYZA-JP-8B-GGUF | Meta Llama 3 Community License | **条件付き**。月間アクティブユーザー数の上限条項と表示義務がある | `Llama-3-ELYZA-JP-8B-q4_k_m.gguf` 4.92 GB | 2026-09-19 |
+| Llama-3-ELYZA-JP-8B（8B 級・日本語強化） | https://huggingface.co/elyza/Llama-3-ELYZA-JP-8B-GGUF | Meta Llama 3 Community License | **条件付き**。月間アクティブユーザー 7 億超の事業者は Meta に別途申請が要る。「Built with Meta Llama 3」の表示義務あり | `Llama-3-ELYZA-JP-8B-q4_k_m.gguf` 4.92 GB | 2026-09-19 |
 
 LFM の条項は「"Threshold" shall mean annual revenue of 10 million United States
 dollars ($10,000,000) or more」（第 1 条）および「The rights granted under this
 License for Commercial Use are conditioned upon You or Your Legal Entity not
 exceeding the Threshold」（第 5 条 a）。
+
+Llama 3 の条項は「If, on the Meta Llama 3 version release date, the monthly active
+users of the products or services made available by or for Licensee, or Licensee's
+affiliates, is greater than 700 million monthly active users in the preceding
+calendar month, you must request a license from Meta」（第 2 条）と
+「prominently display "Built with Meta Llama 3"」（第 1 条 b i）。
+出典: https://developer.meta.com/ai/llama3/license/（`https://www.llama.com/llama3/license/` から転送される）
 
 ## ランタイム
 
