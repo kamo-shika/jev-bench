@@ -36,6 +36,35 @@ def accuracy(preds, golds):
     return sum(p == g for p, g in zip(preds, golds)) / len(preds)
 
 
+def wilson(k, n, z=1.96):
+    """二項比率の Wilson 信頼区間。既定は 95%（z = 1.96）。
+
+    正解率が 0 や 1 に寄っても区間が [0, 1] をはみ出さない。件数 0 なら (0.0, 1.0)。
+    """
+    if n == 0:
+        return 0.0, 1.0
+    p = k / n
+    d = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / d
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return max(0.0, center - half), min(1.0, center + half)
+
+
+def brier(items):
+    """多クラスの Brier スコア。items は (確率の辞書, 正解ラベル) の列。
+
+    1 件ごとに、正解を 1・それ以外を 0 とした並びとの二乗誤差を全ラベル分足し、その平均。
+    範囲は 0（完全に当たっている）から 2。正解ラベルが辞書に無い件は、
+    その正解の確率を 0 として数える。
+    """
+    total = 0.0
+    for probs, gold in items:
+        total += sum((v - (k == gold)) ** 2 for k, v in probs.items())
+        if gold not in probs:
+            total += 1.0
+    return total / len(items)
+
+
 def ece(items, bins=10):
     """ECE と、信頼度ごとの正解率の表を返す。
 

@@ -121,6 +121,27 @@ def test_prompt_has_no_stale_placeholder():
     # 思考を空にする印は、チャットテンプレートの末尾に足す前提
     assert backends.THINK == "<think>\n\n</think>\n\n"
 
+def test_build_prompt_例の記号は今の選択肢の並びから引く():
+    q = dict(CHOICE, examples=[{"state": "例1", "gold": "みどり"}, {"state": "例2", "gold": "あか"}])
+    text = backends.build_prompt("本題", q)
+    # 並びは あか / あお / みどり なので A / B / C
+    assert "例1\n答え: C" in text
+    assert "例2\n答え: A" in text
+    # 本題は例より後ろ。例の答えの続きを書かせないため
+    assert text.index("本題") > text.index("例2")
+
+    # 選択肢を 1 つ回すと記号も一緒に動く（あお / みどり / あか → A / B / C）
+    rotated = dict(q, criteria={k: CHOICE["criteria"][k] for k in ["あお", "みどり", "あか"]})
+    rotated_text = backends.build_prompt("本題", rotated)
+    assert "例1\n答え: B" in rotated_text
+    assert "例2\n答え: C" in rotated_text
+
+
+def test_build_prompt_例が無ければ従来の並び():
+    text = backends.build_prompt("本題", CHOICE)
+    assert text.index("本題") < text.index("A. 赤い")
+    assert "答え:" not in text
+
 
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):

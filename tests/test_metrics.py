@@ -37,6 +37,30 @@ def test_ece_信頼度1は最後のビン():
     assert table == [(0.9, 1.0, 1, 1.0, 1.0)]
 
 
+def test_wilson_手計算():
+    # 0/10: 中心 (0 + 1.9208/20) / (1 + 0.38416) = 0.06938、半幅 1.96*sqrt(0 + 0.0096)/1.38416
+    lo, hi = metrics.wilson(0, 10)
+    assert lo == 0.0  # 下限は 0 で止める
+    assert abs(hi - 0.27753) < 1e-4
+    lo, hi = metrics.wilson(5, 10)
+    assert abs(lo - 0.23659) < 1e-4
+    assert abs(hi - 0.76341) < 1e-4
+    assert metrics.wilson(0, 0) == (0.0, 1.0)
+
+
+def test_brier_手計算():
+    # 1 件目: (0.7-1)^2 + 0.2^2 + 0.1^2 = 0.09 + 0.04 + 0.01 = 0.14
+    # 2 件目: 0.2^2 + (0.3-1)^2 + 0.5^2 = 0.04 + 0.49 + 0.25 = 0.78
+    # 平均 0.46。正解の 1 件だけを見る流儀（1/2 倍）なら 0.23 になる
+    items = [
+        ({"a": 0.7, "b": 0.2, "c": 0.1}, "a"),
+        ({"a": 0.2, "b": 0.3, "c": 0.5}, "b"),
+    ]
+    assert abs(metrics.brier(items) - 0.46) < 1e-12
+    # 正解のラベルが辞書に無ければ、その正解の確率 0 として数える
+    assert abs(metrics.brier([({"a": 1.0}, "b")]) - 2.0) < 1e-12
+
+
 def test_auroc_手計算():
     # 正解のほうが信頼度が高く完全に分かれる → 1.0、逆 → 0.0
     assert metrics.auroc([(0.9, True), (0.8, True), (0.4, False), (0.3, False)]) == 1.0
@@ -239,6 +263,55 @@ def test_温度は行ごとに当てる():
     assert abs(出た[0] - 期待[0]) < 5e-4  # 平均なしの行は order 0 の確率で当てた T
     assert abs(出た[1] - 期待[1]) < 5e-4  # 平均ありの行は平均した確率で当てた T
     assert abs(出た[0] - 出た[1]) > 0.01  # 確信の強さが違うので同じ T にはならない
+
+
+def _一順序のraw(組):
+    """(正解, 確率の辞書) の列から、order 0 だけの raw を作る。"""
+    return [
+        {
+            "id": "x%d" % i,
+            "qids": ["q1"],
+            "gold": [gold],
+            "runs": [{"order": 0, "probs": {"q1": dict(probs)}}],
+            "latency": [0.1],
+        }
+        for i, (gold, probs) in enumerate(組)
+    ]
+
+
+def _数字(line, 見出し):
+    """「見出し 0.1234」の形から数を取り出す。"""
+    後ろ = line.split(見出し, 1)[1].split()[0]
+    return float(後ろ.split("（")[0])
+
+
+def test_report_の_NLL_と_Brier_は手計算と一致する():
+    # 1 件目: 正解 a で 0.8 → -ln 0.8 = 0.223144、二乗誤差 0.04 + 0.04 = 0.08
+    # 2 件目: 正解 b で 0.4 → -ln 0.4 = 0.916291、二乗誤差 0.36 + 0.36 = 0.72
+    # NLL = 0.569717、Brier = 0.40
+    records = _一順序のraw([("a", {"a": 0.8, "b": 0.2}), ("b", {"a": 0.6, "b": 0.4})])
+    行 = [ln for ln in _report_lines(records) if ln.startswith("正解率")]
+    assert 行, "正解率の行が出ていない"
+    for line in 行:  # 「平均なし」と「平均あり」は order 0 だけなので同じ値になる
+        assert abs(_数字(line, "NLL") - 0.569717) < 1e-4  # 表示は小数 4 桁
+        assert abs(_数字(line, "Brier") - 0.40) < 1e-9
+        assert abs(_数字(line, "正解率") - 0.5) < 1e-9
+
+
+def test_report_の_NLL_は温度を二度掛けない():
+    # 較正ありの行は、温度を当てた確率での NLL。_flatten が温度を適用済みなので、
+    # ここで温度をもう一度掛けると値がずれる
+    records = _一順序のraw([("a", {"a": 0.99, "b": 0.01})] * 8 + [("b", {"a": 0.99, "b": 0.01})] * 2)
+    lines = _report_lines(records, calibrate=_一順序のraw(
+        [("a", {"a": 0.99, "b": 0.01})] * 7 + [("b", {"a": 0.99, "b": 0.01})] * 3
+    ))
+    t = float([ln for ln in lines if ln.startswith("温度 T =")][0].split("=")[1].split("（")[0])
+    assert t > 1.5, "自信過剰な raw なので 1 より大きい温度が当たるはず"
+    出た = _数字([ln for ln in lines if ln.startswith("正解率")][1], "NLL")
+    期待 = metrics.nll(
+        [(metrics.apply_temperature(p, t), g) for _, p, g in run._flatten(records, order=0)], 1.0
+    )
+    assert abs(出た - 期待) < 1e-4
 
 
 def test_選択肢数を超える順序は重複して平均しない():
