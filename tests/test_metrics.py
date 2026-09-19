@@ -265,6 +265,55 @@ def test_温度は行ごとに当てる():
     assert abs(出た[0] - 出た[1]) > 0.01  # 確信の強さが違うので同じ T にはならない
 
 
+def _一順序のraw(組):
+    """(正解, 確率の辞書) の列から、order 0 だけの raw を作る。"""
+    return [
+        {
+            "id": "x%d" % i,
+            "qids": ["q1"],
+            "gold": [gold],
+            "runs": [{"order": 0, "probs": {"q1": dict(probs)}}],
+            "latency": [0.1],
+        }
+        for i, (gold, probs) in enumerate(組)
+    ]
+
+
+def _数字(line, 見出し):
+    """「見出し 0.1234」の形から数を取り出す。"""
+    後ろ = line.split(見出し, 1)[1].split()[0]
+    return float(後ろ.split("（")[0])
+
+
+def test_report_の_NLL_と_Brier_は手計算と一致する():
+    # 1 件目: 正解 a で 0.8 → -ln 0.8 = 0.223144、二乗誤差 0.04 + 0.04 = 0.08
+    # 2 件目: 正解 b で 0.4 → -ln 0.4 = 0.916291、二乗誤差 0.36 + 0.36 = 0.72
+    # NLL = 0.569717、Brier = 0.40
+    records = _一順序のraw([("a", {"a": 0.8, "b": 0.2}), ("b", {"a": 0.6, "b": 0.4})])
+    行 = [ln for ln in _report_lines(records) if ln.startswith("正解率")]
+    assert 行, "正解率の行が出ていない"
+    for line in 行:  # 「平均なし」と「平均あり」は order 0 だけなので同じ値になる
+        assert abs(_数字(line, "NLL") - 0.569717) < 1e-4  # 表示は小数 4 桁
+        assert abs(_数字(line, "Brier") - 0.40) < 1e-9
+        assert abs(_数字(line, "正解率") - 0.5) < 1e-9
+
+
+def test_report_の_NLL_は温度を二度掛けない():
+    # 較正ありの行は、温度を当てた確率での NLL。_flatten が温度を適用済みなので、
+    # ここで温度をもう一度掛けると値がずれる
+    records = _一順序のraw([("a", {"a": 0.99, "b": 0.01})] * 8 + [("b", {"a": 0.99, "b": 0.01})] * 2)
+    lines = _report_lines(records, calibrate=_一順序のraw(
+        [("a", {"a": 0.99, "b": 0.01})] * 7 + [("b", {"a": 0.99, "b": 0.01})] * 3
+    ))
+    t = float([ln for ln in lines if ln.startswith("温度 T =")][0].split("=")[1].split("（")[0])
+    assert t > 1.5, "自信過剰な raw なので 1 より大きい温度が当たるはず"
+    出た = _数字([ln for ln in lines if ln.startswith("正解率")][1], "NLL")
+    期待 = metrics.nll(
+        [(metrics.apply_temperature(p, t), g) for _, p, g in run._flatten(records, order=0)], 1.0
+    )
+    assert abs(出た - 期待) < 1e-4
+
+
 def test_選択肢数を超える順序は重複して平均しない():
     # 選択肢 2 個に --orders 3。元 0.9 / 入れ替え 0.3 の 2 通りだけ投げて平均 0.6
     with tempfile.TemporaryDirectory() as d:
