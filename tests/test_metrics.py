@@ -37,6 +37,30 @@ def test_ece_信頼度1は最後のビン():
     assert table == [(0.9, 1.0, 1, 1.0, 1.0)]
 
 
+def test_wilson_手計算():
+    # 0/10: 中心 (0 + 1.9208/20) / (1 + 0.38416) = 0.06938、半幅 1.96*sqrt(0 + 0.0096)/1.38416
+    lo, hi = metrics.wilson(0, 10)
+    assert lo == 0.0  # 下限は 0 で止める
+    assert abs(hi - 0.27753) < 1e-4
+    lo, hi = metrics.wilson(5, 10)
+    assert abs(lo - 0.23659) < 1e-4
+    assert abs(hi - 0.76341) < 1e-4
+    assert metrics.wilson(0, 0) == (0.0, 1.0)
+
+
+def test_brier_手計算():
+    # 1 件目: (0.7-1)^2 + 0.2^2 + 0.1^2 = 0.09 + 0.04 + 0.01 = 0.14
+    # 2 件目: 0.2^2 + (0.3-1)^2 + 0.5^2 = 0.04 + 0.49 + 0.25 = 0.78
+    # 平均 0.46。正解の 1 件だけを見る流儀（1/2 倍）なら 0.23 になる
+    items = [
+        ({"a": 0.7, "b": 0.2, "c": 0.1}, "a"),
+        ({"a": 0.2, "b": 0.3, "c": 0.5}, "b"),
+    ]
+    assert abs(metrics.brier(items) - 0.46) < 1e-12
+    # 正解のラベルが辞書に無ければ、その正解の確率 0 として数える
+    assert abs(metrics.brier([({"a": 1.0}, "b")]) - 2.0) < 1e-12
+
+
 def test_auroc_手計算():
     # 正解のほうが信頼度が高く完全に分かれる → 1.0、逆 → 0.0
     assert metrics.auroc([(0.9, True), (0.8, True), (0.4, False), (0.3, False)]) == 1.0

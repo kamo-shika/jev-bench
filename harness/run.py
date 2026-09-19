@@ -231,8 +231,22 @@ def report(args):
             golds = [g for _, _, g in items]
             scored = [(max(p.values()), metrics.argmax(p) == g) for _, p, g in items]
             value, table = metrics.ece(scored)
+            # _flatten が温度を適用済みなので、ここでは 1.0 を渡して二重に割らない
+            graded = [(p, g) for _, p, g in items]
+            lo, hi = metrics.wilson(sum(p == g for p, g in zip(preds, golds)), len(items))
             print("\n== %s / %s ==" % (label, t_label))
-            print("正解率 %.4f  ECE %.4f  件数 %d" % (metrics.accuracy(preds, golds), value, len(items)))
+            print(
+                "正解率 %.4f（95%% 区間 %.4f–%.4f）  ECE %.4f  Brier %.4f  NLL %.4f  件数 %d"
+                % (
+                    metrics.accuracy(preds, golds),
+                    lo,
+                    hi,
+                    value,
+                    metrics.brier(graded),
+                    metrics.nll(graded, 1.0),
+                    len(items),
+                )
+            )
             # ECE は「信頼度の値が当たっているか」しか見ない。信頼度の高い答えほど
             # 当たっているか（識別力）は AUROC と上位 / 下位の差で見る
             area = metrics.auroc(scored)
