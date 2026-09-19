@@ -137,25 +137,27 @@ def _choice_counts(records):
 
     混同行列は 正解 → (答え → 件数)。答えなし（同点）は None のまま数える。
     位置は記号 A, B, C… の何番目にその選択肢が置かれていたか。
-    同じ (項目, 質問, 順序) は繰り返しの 1 回目だけを数え、分母を質問数にそろえる。
+    答えは _flatten と同じく繰り返しを平均してから決める。正解率と数え方をそろえないと、
+    同じ出力の中で対角の合計と正解率が食い違う。
     """
-    gold_of = {
-        (rec["id"], qid): g for rec in records for qid, g in zip(rec["qids"], rec["gold"])
-    }
-    confusion, positions, seen = {}, {}, set()
+    confusion, positions = {}, {}
     for rec in records:
+        by_order = {}
         for r in rec["runs"]:
-            for qid, probs in r["probs"].items():
-                key = (rec["id"], qid, r["order"])
-                if key in seen or not _is_choice(probs):
+            by_order.setdefault(r["order"], []).append(r["probs"])
+        for qid, gold in zip(rec["qids"], rec["gold"]):
+            for order, per_repeat in by_order.items():
+                got = [p[qid] for p in per_repeat if qid in p]
+                if not got or not _is_choice(got[0]):
                     continue
-                seen.add(key)
-                pred = metrics.argmax(probs)
-                rows = confusion.setdefault(r["order"], {}).setdefault(gold_of[key[:2]], {})
+                pred = metrics.argmax(metrics.average_probs(got))
+                rows = confusion.setdefault(order, {}).setdefault(gold, {})
                 rows[pred] = rows.get(pred, 0) + 1
                 if pred is not None:
+                    # 同じ順序なら繰り返しの間でラベルの並びは同じ。平均すると並びが
+                    # 失われるので、位置はもとの辞書から取る
                     at = positions.setdefault(pred, {})
-                    at[list(probs).index(pred)] = at.get(list(probs).index(pred), 0) + 1
+                    at[list(got[0]).index(pred)] = at.get(list(got[0]).index(pred), 0) + 1
     return confusion, positions
 
 

@@ -163,7 +163,7 @@ def test_flatten_は順序ごとに繰り返しを平均してから順序を平
     assert abs(あり["a"] - 0.3) < 1e-12  # 順序ごとの平均 0.4 と 0.2 の平均
 
 
-def test_choice_counts_は繰り返しを二重に数えず_choice以外を除く():
+def test_choice_counts_は繰り返しを平均してから数え_choice以外を除く():
     records = [
         {
             "id": "x",
@@ -171,7 +171,7 @@ def test_choice_counts_は繰り返しを二重に数えず_choice以外を除�
             "gold": ["a"],
             "runs": [
                 {"order": 0, "probs": {"q1": {"a": 0.9, "b": 0.1}}},
-                {"order": 0, "probs": {"q1": {"a": 0.9, "b": 0.1}}},  # 同じ順序の 2 回目
+                {"order": 0, "probs": {"q1": {"a": 0.3, "b": 0.7}}},  # 平均すると a 0.6 で a
                 {"order": 1, "probs": {"q1": {"b": 0.8, "a": 0.2}}},  # 入れ替えで b が A の位置
             ],
             "latency": [0.1],
